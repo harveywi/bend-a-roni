@@ -26,7 +26,7 @@ object BendARoniBuild extends Build {
     settings(
       moduleName := "bend-a-roni-examples",
       libraryDependencies ++= Seq(
-        "org.scala-lang.modules" % "scala-swing_2.11" % "2.0.0-M2"
+        "org.scala-lang.modules" % "scala-swing_2.11" % "2.0.0-M2" withSources()
       )
     )
   )
