@@ -8,5 +8,5 @@ case class Point(x: Double, y: Double) {
   def length = Math.sqrt(x * x + y * y)
   def dist(p: Point) = (this - p).length
   def dot(p: Point) = x * p.x + y * p.y
-  def cross(p: Point) = x * p.y - y * p.x
+  def determinant(p: Point) = x * p.y - y * p.x
 }

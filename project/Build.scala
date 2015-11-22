@@ -15,7 +15,11 @@ object BendARoniBuild extends Build {
   lazy val core = (project
     settings(commonSettings: _*)
     settings(
-      moduleName := "bend-a-roni"
+      moduleName := "bend-a-roni",
+      libraryDependencies ++= Seq(
+        "com.googlecode.matrix-toolkits-java" % "mtj" % "1.0.2" withSources(),
+        "net.sourceforge.csparsej" % "csparsej" % "1.1.1" withSources()
+      )
     )
   )
 
