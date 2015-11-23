@@ -4,28 +4,39 @@ import shapeless._
 import shapeless.syntax.std.tuple._
 import no.uib.cipr.matrix.DenseMatrix
 import no.uib.cipr.matrix.Matrices
+import scala.collection.JavaConverters._
+import edu.emory.mathcs.csparsej.tdouble.Dcs_common.Dcs
+import edu.emory.mathcs.csparsej.tdouble.Dcs_util
+import edu.emory.mathcs.csparsej.tdouble.Dcs_entry
+import edu.emory.mathcs.csparsej.tdouble.Dcs_compress
+import edu.emory.mathcs.csparsej.tdouble.Dcs_qrsol
+import no.uib.cipr.matrix.DenseVector
 
+// TODO: Use sparse matrices everywhere
 case class TriangulatedShape(
     vertices: IndexedSeq[Point],
     triangles: IndexedSeq[(Int, Int, Int)]) {
 
-  private[this] case class Edge(i: Int, j: Int) {
+  case class Edge(i: Int, j: Int) {
     require(i < j)
   }
 
+  val w = 10d
+
   private[this] case class Triangle(i: Int, j: Int, k: Int)
 
-  private[this] case class EdgeNeighborDoodad(
-    i: Int,
-    j: Int,
+  case class EdgeNeighborDoodad(
+    e: Edge,
     neighborInfo: LeftRightNeighborInfo,
     GTGinvGT: DenseMatrix)
 
+  case class RegistrationResult(L1: DenseMatrix, L2: DenseMatrix,
+                                edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
   /*
    * Calculate the top of matrices A1 and A2.  Also calculate
    * matrix G products for each edge.
    */
-  def register(): Unit = {
+  def register(): RegistrationResult = {
     /*
      * For each edge, we have a data structure
      */
@@ -87,13 +98,14 @@ case class TriangulatedShape(
         val GTGinvGT = new DenseMatrix(2, gRows)
         GTGinv.transBmult(G, GTGinvGT)
 
-        EdgeNeighborDoodad(e.i, e.j, edgeNeighborInfo, GTGinvGT)
-    }
-    
-    // TODO:  Finish this up
-  }
+        EdgeNeighborDoodad(e, edgeNeighborInfo, GTGinvGT)
+    }.toIndexedSeq
 
-  //  private[this] case class LeftRightResult(leftNeighbor: Int, rightNeighbor: Int])
+    val L1 = buildMatrixL1(edgeNeighborDoodads)
+    val L2 = buildMatrixL2(edgeNeighborDoodads)
+
+    RegistrationResult(L1, L2, edgeNeighborDoodads)
+  }
 
   sealed trait LeftRightNeighborInfo
   case class LeftAndRightNeighbors(l: Int, r: Int) extends LeftRightNeighborInfo
@@ -111,13 +123,17 @@ case class TriangulatedShape(
       case Seq(i, j) => (i, Some(j))
     }
 
-    val v = vertices(e.i)
+    val vi = vertices(e.i)
+    val vj = vertices(e.j)
+
     val p = vertices(i)
 
+    val vec_vi_vj = vj - vi
+    val vec_vi_p = p - vi
+
     // Have to determine if p is on the left or right
-    if (v.determinant(p) > 0)
+    if (vec_vi_vj.determinant(vec_vi_p) > 0)
       // p is on the left
-      //LeftRightResult(Some(i), jOpt)
       jOpt match {
         case Some(j) => LeftAndRightNeighbors(i, j)
         case None    => LeftNeighbor(i)
@@ -131,8 +147,210 @@ case class TriangulatedShape(
       }
   }
 
+  /*
+   * L1 is the top part of matrix A1 that is used in the translation/rotation
+   * calculations.
+   */
+  private[this] def buildMatrixL1(edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad]): DenseMatrix = {
+    val L1 = new DenseMatrix(2 * edgeNeighborDoodads.size, 2 * vertices.size)
+
+    // TODO:  Rename these matrices.
+    val X8 = new DenseMatrix(2, 8)
+    X8.set(0, 0, -1); X8.set(0, 2, 1)
+    X8.set(1, 1, -1); X8.set(1, 3, 1)
+    val Y8 = new DenseMatrix(2, 8)
+
+    val X6 = new DenseMatrix(2, 6)
+    X6.set(0, 0, -1); X6.set(0, 2, 1)
+    X6.set(1, 1, -1); X6.set(1, 3, 1)
+    val Y6 = new DenseMatrix(2, 6)
+
+    val E = new DenseMatrix(2, 2)
+    val E8 = new DenseMatrix(2, 8)
+    val E6 = new DenseMatrix(2, 6)
+    edgeNeighborDoodads.iterator.zipWithIndex.foreach {
+      case (EdgeNeighborDoodad(Edge(i, j), neighborInfo, matGTGinvGT), edgeIdx) =>
+        val vi = vertices(i)
+        val vj = vertices(j)
+        val eVec = vj - vi
+
+        E.set(0, 0, eVec.x); E.set(0, 1, eVec.y)
+        E.set(1, 0, eVec.y); E.set(1, 1, -eVec.x)
+
+        def caseOneNeighbor(n: Int): Unit = {
+          E.mult(matGTGinvGT, E6)
+          val Y6 = X6.copy()
+          Y6.add(-1, E6)
+
+          // Unpack the coefficients and stuff them into the matrix L1.
+          val row1 = 2 * edgeIdx
+          L1.set(row1, 2 * i, Y6.get(0, 0))
+          L1.set(row1, 2 * i + 1, Y6.get(0, 1))
+          L1.set(row1, 2 * j, Y6.get(0, 2))
+          L1.set(row1, 2 * j + 1, Y6.get(0, 3))
+          L1.set(row1, 2 * n, Y6.get(0, 4))
+          L1.set(row1, 2 * n + 1, Y6.get(0, 5))
+
+          val row2 = row1 + 1
+          L1.set(row2, 2 * i, Y6.get(1, 0))
+          L1.set(row2, 2 * i + 1, Y6.get(1, 1))
+          L1.set(row2, 2 * j, Y6.get(1, 2))
+          L1.set(row2, 2 * j + 1, Y6.get(1, 3))
+          L1.set(row2, 2 * n, Y6.get(1, 4))
+          L1.set(row2, 2 * n + 1, Y6.get(1, 5))
+        }
+
+        neighborInfo match {
+          case LeftAndRightNeighbors(l, r) =>
+            E.mult(matGTGinvGT, E8)
+            val Y8 = X8.copy()
+            Y8.add(-1, E8)
+
+            // Unpack the coefficients and stuff them into the matrix L1.
+            val row1 = 2 * edgeIdx
+            L1.set(row1, 2 * i, Y8.get(0, 0))
+            L1.set(row1, 2 * i + 1, Y8.get(0, 1))
+            L1.set(row1, 2 * j, Y8.get(0, 2))
+            L1.set(row1, 2 * j + 1, Y8.get(0, 3))
+            L1.set(row1, 2 * l, Y8.get(0, 4))
+            L1.set(row1, 2 * l + 1, Y8.get(0, 5))
+            L1.set(row1, 2 * r, Y8.get(0, 6))
+            L1.set(row1, 2 * r + 1, Y8.get(0, 7))
+
+            val row2 = row1 + 1
+            L1.set(row2, 2 * i, Y8.get(1, 0))
+            L1.set(row2, 2 * i + 1, Y8.get(1, 1))
+            L1.set(row2, 2 * j, Y8.get(1, 2))
+            L1.set(row2, 2 * j + 1, Y8.get(1, 3))
+            L1.set(row2, 2 * l, Y8.get(1, 4))
+            L1.set(row2, 2 * l + 1, Y8.get(1, 5))
+            L1.set(row2, 2 * r, Y8.get(1, 6))
+            L1.set(row2, 2 * r + 1, Y8.get(1, 7))
+
+          case LeftNeighbor(l)  => caseOneNeighbor(l)
+          case RightNeighbor(r) => caseOneNeighbor(r)
+        }
+    }
+    L1
+  }
+
+  /*
+   * L2 is the top portion of the matrix used for optimizing scale. 
+   */
+  private[this] def buildMatrixL2(edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad]): DenseMatrix = {
+    val L2 = new DenseMatrix(edgeNeighborDoodads.size, vertices.size)
+
+    edgeNeighborDoodads.iterator.zipWithIndex.foreach {
+      case (EdgeNeighborDoodad(Edge(i, j), _, _), edgeIdx) =>
+        L2.set(edgeIdx, i, -1)
+        L2.set(edgeIdx, j, 1)
+    }
+    L2
+  }
+
+  // TODO:  Remove the naive matrices when things appear to work perfectly.
+  case class CompilationResult(A1: Dcs, A2: Dcs, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad],
+                               A1_naive: DenseMatrix, A2_naive: DenseMatrix)
+
   // TODO:  This should return something.
-  def compile(): Unit = {
-    ???
+  def compile(handleIDs: IndexedSeq[Int], registrationResult: RegistrationResult): CompilationResult = {
+
+    val L1 = registrationResult.L1
+    val L2 = registrationResult.L2
+
+    val C1 = buildMatrixC1(handleIDs, w)
+    val C2 = buildMatrixC2(handleIDs, w)
+
+    // Copy L1 and C1 into A1.
+    val A1 = Dcs_util.cs_spalloc(0, 0, 1, true, true)
+    L1.iterator.asScala
+      // TODO:  When L1 is sparse, get rid of these checks
+      .filter(_.get != 0d)
+      .foreach(e => assert(Dcs_entry.cs_entry(A1, e.row, e.column, e.get) != null))
+
+    C1.iterator.asScala
+      .filter(_.get != 0d)
+      .foreach(e => assert(Dcs_entry.cs_entry(A1, e.row + L1.numRows, e.column, e.get) != null))
+
+    val A1_compressed = Dcs_compress.cs_compress(A1)
+
+    // Copy L2 and C2 into A2.
+    val A2 = Dcs_util.cs_spalloc(0, 0, 1, true, true)
+    L2.iterator.asScala
+      // TODO:  When L2 is sparse, get rid of these checks
+      .filter(_.get != 0d)
+      .foreach(e => assert(Dcs_entry.cs_entry(A2, e.row, e.column, e.get) != null))
+
+    C2.iterator.asScala
+      .filter(_.get != 0d)
+      .foreach(e => assert(Dcs_entry.cs_entry(A2, e.row + L2.numRows, e.column, e.get) != null))
+
+    val A2_compressed = Dcs_compress.cs_compress(A2)
+
+    // Copy L1 and C1 into A1.
+    val A1_naive = new DenseMatrix(L1.numRows + C1.numRows, L1.numColumns)
+    L1.iterator.asScala.foreach(e => A1_naive.set(e.row, e.column, e.get))
+    C1.iterator.asScala.foreach(e => A1_naive.set(e.row + L1.numRows, e.column, e.get))
+
+    // Copy L2 and C2 into A2.
+    val A2_naive = new DenseMatrix(L2.numRows + C2.numRows, L2.numColumns)
+    L2.iterator.asScala.foreach(e => A2_naive.set(e.row, e.column, e.get))
+    C2.iterator.asScala.foreach(e => A2_naive.set(e.row + L2.numRows, e.column, e.get))
+
+    CompilationResult(A1_compressed, A2_compressed, registrationResult.edgeNeighborDoodads, A1_naive, A2_naive)
+  }
+
+  def calculateNewVertexPositions(handlePositions: IndexedSeq[Point], compilationResult: CompilationResult): IndexedSeq[Point] = {
+
+    val b1 = new Array[Double](2 * compilationResult.edgeNeighborDoodads.size + 2 * handlePositions.size)
+    handlePositions.indices.foreach { i =>
+      val c = handlePositions(i)
+
+      val idx = 2 * (compilationResult.edgeNeighborDoodads.size + i)
+      b1(idx) = w * c.x
+      b1(idx + 1) = w * c.y
+    }
+
+    // TODO:  Do the QR decomposition during compilation rather than here.
+    val result = Dcs_qrsol.cs_qrsol(2, compilationResult.A1, b1)
+    b1.grouped(2).map { case Array(x, y) => Point(x, y) }.toIndexedSeq
+
+    //    val ATA1 = new DenseMatrix(compilationResult.A1_naive.numColumns, compilationResult.A1_naive.numColumns)
+    //    compilationResult.A1_naive.transAmult(compilationResult.A1_naive, ATA1)
+    //    
+    //    val b1Vec = new DenseVector(2 * vertices.size)
+    //    val ATb = compilationResult.A1_naive.transMult(new DenseVector(b1), b1Vec)
+    //    
+    //    val solveResult = new DenseVector(2 * vertices.size)
+    //    ATA1.solve(ATb, solveResult)
+    //    
+    //    solveResult.getData.grouped(2).zipWithIndex.map { case (Array(x, y), i) => 
+    //      Point(x, y)
+    //    }.toIndexedSeq
+
+  }
+
+  /*
+   * This is the bottom portion of the matrix A1 that optimizes translation/rotation.
+   */
+  private[this] def buildMatrixC1(handleIDs: IndexedSeq[Int], w: Double): DenseMatrix = {
+    val C1 = new DenseMatrix(2 * handleIDs.size, 2 * vertices.size)
+
+    handleIDs.iterator.zipWithIndex.foreach {
+      case (handleId, rowIdx) =>
+        C1.set(2 * rowIdx, 2 * handleId, w)
+        C1.set(2 * rowIdx + 1, 2 * handleId + 1, w)
+    }
+    C1
+  }
+
+  private[this] def buildMatrixC2(handleIDs: IndexedSeq[Int], w: Double): DenseMatrix = {
+    val C2 = new DenseMatrix(handleIDs.size, vertices.size)
+
+    handleIDs.iterator.zipWithIndex.foreach {
+      case (handleId, row) =>
+        C2.set(row, handleId, w)
+    }
+    C2
   }
 }
