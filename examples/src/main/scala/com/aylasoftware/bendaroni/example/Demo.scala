@@ -113,7 +113,7 @@ object Demo extends SimpleSwingApplication {
                   case i           => sampleShape.vertices(i)
                 }
                 newVertexPositions = Some(sampleShape.calculateNewVertexPositions(
-                  handlePositions, c))
+                 handles, handlePositions, c))
             }
             //            val handlePositions = handles.map{
             //              case i if i

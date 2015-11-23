@@ -21,7 +21,7 @@ case class TriangulatedShape(
     require(i < j)
   }
 
-  val w = 10d
+  val w = 1000d
 
   private[this] case class Triangle(i: Int, j: Int, k: Int)
 
@@ -249,8 +249,7 @@ case class TriangulatedShape(
   }
 
   // TODO:  Remove the naive matrices when things appear to work perfectly.
-  case class CompilationResult(A1: Dcs, A2: Dcs, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad],
-                               A1_naive: DenseMatrix, A2_naive: DenseMatrix)
+  case class CompilationResult(A1: Dcs, A2: Dcs, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
 
   // TODO:  This should return something.
   def compile(handleIDs: IndexedSeq[Int], registrationResult: RegistrationResult): CompilationResult = {
@@ -287,20 +286,10 @@ case class TriangulatedShape(
 
     val A2_compressed = Dcs_compress.cs_compress(A2)
 
-    // Copy L1 and C1 into A1.
-    val A1_naive = new DenseMatrix(L1.numRows + C1.numRows, L1.numColumns)
-    L1.iterator.asScala.foreach(e => A1_naive.set(e.row, e.column, e.get))
-    C1.iterator.asScala.foreach(e => A1_naive.set(e.row + L1.numRows, e.column, e.get))
-
-    // Copy L2 and C2 into A2.
-    val A2_naive = new DenseMatrix(L2.numRows + C2.numRows, L2.numColumns)
-    L2.iterator.asScala.foreach(e => A2_naive.set(e.row, e.column, e.get))
-    C2.iterator.asScala.foreach(e => A2_naive.set(e.row + L2.numRows, e.column, e.get))
-
-    CompilationResult(A1_compressed, A2_compressed, registrationResult.edgeNeighborDoodads, A1_naive, A2_naive)
+    CompilationResult(A1_compressed, A2_compressed, registrationResult.edgeNeighborDoodads)
   }
 
-  def calculateNewVertexPositions(handlePositions: IndexedSeq[Point], compilationResult: CompilationResult): IndexedSeq[Point] = {
+  def calculateNewVertexPositions(handleIndices: IndexedSeq[Int], handlePositions: IndexedSeq[Point], compilationResult: CompilationResult): IndexedSeq[Point] = {
 
     val b1 = new Array[Double](2 * compilationResult.edgeNeighborDoodads.size + 2 * handlePositions.size)
     handlePositions.indices.foreach { i =>
@@ -312,22 +301,60 @@ case class TriangulatedShape(
     }
 
     // TODO:  Do the QR decomposition during compilation rather than here.
-    val result = Dcs_qrsol.cs_qrsol(2, compilationResult.A1, b1)
-    b1.grouped(2).map { case Array(x, y) => Point(x, y) }.toIndexedSeq
+    val result = Dcs_qrsol.cs_qrsol(0, compilationResult.A1, b1)
+    val similarityTransformedVertices = b1.grouped(2).take(vertices.size).map { case Array(x, y) => Point(x, y) }.toIndexedSeq
 
-    //    val ATA1 = new DenseMatrix(compilationResult.A1_naive.numColumns, compilationResult.A1_naive.numColumns)
-    //    compilationResult.A1_naive.transAmult(compilationResult.A1_naive, ATA1)
-    //    
-    //    val b1Vec = new DenseVector(2 * vertices.size)
-    //    val ATb = compilationResult.A1_naive.transMult(new DenseVector(b1), b1Vec)
-    //    
-    //    val solveResult = new DenseVector(2 * vertices.size)
-    //    ATA1.solve(ATb, solveResult)
-    //    
-    //    solveResult.getData.grouped(2).zipWithIndex.map { case (Array(x, y), i) => 
-    //      Point(x, y)
-    //    }.toIndexedSeq
+    // Now adjust scale
+    val b2x = new Array[Double](compilationResult.edgeNeighborDoodads.size + handlePositions.size)
+    val b2y = new Array[Double](compilationResult.edgeNeighborDoodads.size + handlePositions.size)
+    compilationResult.edgeNeighborDoodads.iterator.zipWithIndex.foreach {
+      case (EdgeNeighborDoodad(Edge(i, j), neighborInfo, matGTGinvGT), edgeIdx) =>
 
+        val vi = similarityTransformedVertices(i)
+        val vj = similarityTransformedVertices(j)
+
+        // TODO: Clean up redundancy here.
+        val (c, s) = neighborInfo match {
+          case LeftAndRightNeighbors(l, r) =>
+            val vl = similarityTransformedVertices(l)
+            val vr = similarityTransformedVertices(r)
+            val cs = matGTGinvGT.mult(new DenseVector(Array(vi.x, vi.y, vj.x, vj.y, vl.x, vl.y, vr.x, vr.y)), new DenseVector(2))
+            (cs.get(0), cs.get(1))
+          case LeftNeighbor(l) =>
+            val vl = similarityTransformedVertices(l)
+            val cs = matGTGinvGT.mult(new DenseVector(Array(vi.x, vi.y, vj.x, vj.y, vl.x, vl.y)), new DenseVector(2))
+            (cs.get(0), cs.get(1))
+          case RightNeighbor(r) =>
+            val vr = similarityTransformedVertices(r)
+            val cs = matGTGinvGT.mult(new DenseVector(Array(vi.x, vi.y, vj.x, vj.y, vr.x, vr.y)), new DenseVector(2))
+            (cs.get(0), cs.get(1))
+        }
+
+        val T = new DenseMatrix(2, 2)
+        T.set(0, 0, c)
+        T.set(0, 1, s)
+        T.set(1, 0, -s)
+        T.set(1, 1, c)
+        T.scale(1 / (c * c + s * s))
+
+        val e = vj - vi
+
+        val m = T.mult(new DenseVector(Array(e.x, e.y)), new DenseVector(2))
+        b2x(edgeIdx) = m.get(0)
+        b2y(edgeIdx) = m.get(1)
+    }
+    
+    handlePositions.indices.foreach{i =>
+      val c = handlePositions(i)
+      val b2Idx = compilationResult.edgeNeighborDoodads.size + i
+      b2x(b2Idx) = w * c.x
+      b2y(b2Idx) = w * c.y
+    }
+    
+    Dcs_qrsol.cs_qrsol(0, compilationResult.A2, b2x)
+    Dcs_qrsol.cs_qrsol(0, compilationResult.A2, b2y)
+    
+    vertices.indices.map(i => Point(b2x(i), b2y(i)))
   }
 
   /*
