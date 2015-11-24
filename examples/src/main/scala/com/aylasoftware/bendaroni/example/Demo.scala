@@ -9,8 +9,7 @@ import scala.swing.SimpleSwingApplication
 import com.github.fommil.netlib.BLAS
 import scala.swing.event._
 import javax.swing.SwingUtilities
-import com.aylasoftware.bendaroni.Point
-import com.aylasoftware.bendaroni.TriangulatedShape
+import com.aylasoftware.bendaroni._
 
 object Demo extends SimpleSwingApplication {
 
@@ -39,7 +38,7 @@ object Demo extends SimpleSwingApplication {
         g2d.setColor(Color.black)
 
         sampleShape.triangles.foreach {
-          case (i, j, k) =>
+          case Triangle(i, j, k) =>
             val p1 = sampleShape.vertices(i)
             val p2 = sampleShape.vertices(j)
             val p3 = sampleShape.vertices(k)
@@ -63,7 +62,7 @@ object Demo extends SimpleSwingApplication {
         g2d.setColor(Color.green)
         newVertexPositions.foreach { vertices =>
           sampleShape.triangles.foreach {
-            case (i, j, k) =>
+            case Triangle(i, j, k) =>
               val p1 = vertices(i)
               val p2 = vertices(j)
               val p3 = vertices(k)

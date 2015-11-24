@@ -28,7 +28,6 @@ object ExampleTriangulatedShape {
         val ny = scaleFactor - (p.y - minY) / rangeY * scaleFactor
         
         Point(nx, ny)
-        
       }
     }
     
@@ -46,11 +45,11 @@ object ExampleTriangulatedShape {
     }.toIndexedSeq
   }
   
-  private[this] def loadTriangles(eleFile: File): IndexedSeq[(Int, Int, Int)] = {
+  private[this] def loadTriangles(eleFile: File): IndexedSeq[Triangle] = {
     Source.fromFile(eleFile).getLines.drop(1).collect {
       case line if !line.startsWith("#") =>
         line.trim.split("\\s+").drop(1).map(_.toInt - 1) match {
-          case Array(i, j, k) => (i, j, k)
+          case Array(i, j, k) => Triangle(i, j, k)
         }
     }.toIndexedSeq
   }

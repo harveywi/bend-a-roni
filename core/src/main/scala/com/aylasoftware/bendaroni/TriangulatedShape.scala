@@ -13,17 +13,9 @@ import edu.emory.mathcs.csparsej.tdouble.Dcs_qrsol
 import no.uib.cipr.matrix.DenseVector
 
 // TODO: Use sparse matrices everywhere
-case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[(Int, Int, Int)]) {
-
-  class Edge private (val i: Int, val j: Int)
-  object Edge {
-    def apply(i: Int, j: Int): Edge = new Edge(i min j, i max j)
-    def unapply(e: Edge): Option[(Int, Int)] = Some((e.i, e.j))
-  }
+case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[Triangle]) {
 
   val w = 1000d
-
-  private[this] case class Triangle(i: Int, j: Int, k: Int)
 
   sealed abstract class NeighborInfo(val indices: Int*) {
     def points: Iterable[Point] = indices.map(vertices)
@@ -47,8 +39,7 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
    */
   def register(): RegistrationResult = {
     val edgeToAdjacentTris = triangles.foldLeft(Map.empty[Edge, Seq[Triangle]]) {
-      case (map, (p, q, r)) =>
-        val t = Triangle(p, q, r)
+      case (map, t @ Triangle(p, q, r)) =>
         Seq(Edge(p, q), Edge(p, r), Edge(q, r)).foldLeft(map)(_.multiUpdated(_, t))
     }
 
