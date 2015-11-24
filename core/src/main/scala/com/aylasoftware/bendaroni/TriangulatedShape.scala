@@ -24,14 +24,16 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
   val w = 1000d
 
   private[this] case class Triangle(i: Int, j: Int, k: Int)
-  
-  sealed trait LeftRightNeighborInfo
-  case class LeftAndRightNeighbors(l: Int, r: Int) extends LeftRightNeighborInfo
-  case class LeftNeighbor(l: Int) extends LeftRightNeighborInfo
-  case class RightNeighbor(r: Int) extends LeftRightNeighborInfo
 
-  case class EdgeNeighborDoodad(e: Edge, neighborInfo: LeftRightNeighborInfo, GTGinvGT: DenseMatrix)
-  
+  sealed abstract class NeighborInfo(val indices: Int*) {
+    def points: Iterable[Point] = indices.map(vertices)
+  }
+  case class LeftAndRightNeighbors(l: Int, r: Int) extends NeighborInfo(l, r)
+  case class LeftNeighbor(l: Int) extends NeighborInfo(l)
+  case class RightNeighbor(r: Int) extends NeighborInfo(r)
+
+  case class EdgeNeighborDoodad(e: Edge, neighborInfo: NeighborInfo, GTGinvGT: DenseMatrix)
+
   case class CompilationResult(A1: Dcs, A2: Dcs, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
   case class RegistrationResult(L1: DenseMatrix, L2: DenseMatrix, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
 
@@ -52,38 +54,29 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
 
     val edgeNeighborDoodads = edgeToAdjacentTris.map {
       case (e, ts) =>
-        val edgeNeighborInfo = getLeftAndRightEdgeNeighbors(e, ts)
+        val neighborInfo = getLeftAndRightEdgeNeighbors(e, ts)
 
         val vi = vertices(e.i)
         val vj = vertices(e.j)
 
-        val pts = edgeNeighborInfo match {
-          case LeftAndRightNeighbors(l, r) =>
-            Seq(vi, vj, vertices(l), vertices(r))
-          case LeftNeighbor(l) =>
-            Seq(vi, vj, vertices(l))
-          case RightNeighbor(r) =>
-            Seq(vi, vj, vertices(r))
-        }
+        val pts = Seq(vi, vj) ++ neighborInfo.points
 
         val G = new DenseMatrix(2 * pts.size, 4)
-        pts.zipWithIndex.foreach {
+        pts.iterator.zipWithIndex.foreach {
           case (p, i) =>
             val row = 2 * i
             G.set(row, 0, p.x); G.set(row, 1, p.y); G.set(row, 2, 1);
             G.set(row + 1, 0, p.y); G.set(row + 1, 1, -p.x); G.set(row + 1, 3, 1);
         }
 
-        val GTG = new DenseMatrix(G.numColumns, G.numColumns)
-        G.transAmult(G, GTG)
+        val GTG = G.transAmult(G, new DenseMatrix(G.numColumns, G.numColumns))
 
         val GTGinv = {
           val I = Matrices.identity(G.numColumns);
           GTG.solve(I, I.copy());
         }
 
-        val GTGinvGT = new DenseMatrix(G.numColumns, G.numRows)
-        GTGinv.transBmult(G, GTGinvGT)
+        val GTGinvGT = GTGinv.transBmult(G, new DenseMatrix(G.numColumns, G.numRows))
 
         val GTGinvGT_top = new DenseMatrix(2, G.numRows)
         (0 until GTGinvGT.numColumns).foreach { c =>
@@ -91,7 +84,7 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
           GTGinvGT_top.set(1, c, GTGinvGT.get(1, c))
         }
 
-        EdgeNeighborDoodad(e, edgeNeighborInfo, GTGinvGT_top)
+        EdgeNeighborDoodad(e, neighborInfo, GTGinvGT_top)
     }.toIndexedSeq
 
     val L1 = buildMatrixL1(edgeNeighborDoodads)
@@ -100,7 +93,7 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
     RegistrationResult(L1, L2, edgeNeighborDoodads)
   }
 
-  private[this] def getLeftAndRightEdgeNeighbors(e: Edge, adjacentTris: Seq[Triangle]): LeftRightNeighborInfo = {
+  private[this] def getLeftAndRightEdgeNeighbors(e: Edge, adjacentTris: Seq[Triangle]): NeighborInfo = {
     val ij = adjacentTris
       .flatMap(_.toList)
       .filterNot(x => x == e.i || x == e.j)
@@ -125,7 +118,6 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
         case Some(j) => LeftAndRightNeighbors(i, j)
         case None    => LeftNeighbor(i)
       }
-
     else
       // p is on the right
       jOpt match {
@@ -145,12 +137,10 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
     val X8 = new DenseMatrix(2, 8)
     X8.set(0, 0, -1); X8.set(0, 2, 1)
     X8.set(1, 1, -1); X8.set(1, 3, 1)
-    val Y8 = new DenseMatrix(2, 8)
 
     val X6 = new DenseMatrix(2, 6)
     X6.set(0, 0, -1); X6.set(0, 2, 1)
     X6.set(1, 1, -1); X6.set(1, 3, 1)
-    val Y6 = new DenseMatrix(2, 6)
 
     val E = new DenseMatrix(2, 2)
     val E8 = new DenseMatrix(2, 8)
@@ -164,58 +154,24 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
         E.set(0, 0, eVec.x); E.set(0, 1, eVec.y)
         E.set(1, 0, eVec.y); E.set(1, 1, -eVec.x)
 
-        def caseOneNeighbor(n: Int): Unit = {
-          E.mult(matGTGinvGT, E6)
-          val Y6 = X6.copy()
-          Y6.add(-1, E6)
-
-          // Unpack the coefficients and stuff them into the matrix L1.
-          val row1 = 2 * edgeIdx
-          L1.set(row1, 2 * i, Y6.get(0, 0))
-          L1.set(row1, 2 * i + 1, Y6.get(0, 1))
-          L1.set(row1, 2 * j, Y6.get(0, 2))
-          L1.set(row1, 2 * j + 1, Y6.get(0, 3))
-          L1.set(row1, 2 * n, Y6.get(0, 4))
-          L1.set(row1, 2 * n + 1, Y6.get(0, 5))
-
-          val row2 = row1 + 1
-          L1.set(row2, 2 * i, Y6.get(1, 0))
-          L1.set(row2, 2 * i + 1, Y6.get(1, 1))
-          L1.set(row2, 2 * j, Y6.get(1, 2))
-          L1.set(row2, 2 * j + 1, Y6.get(1, 3))
-          L1.set(row2, 2 * n, Y6.get(1, 4))
-          L1.set(row2, 2 * n + 1, Y6.get(1, 5))
+        val (outE, outX) = neighborInfo match {
+          case _: LeftAndRightNeighbors => (E8, X8.copy)
+          case _ => (E6, X6.copy)
         }
-
-        neighborInfo match {
-          case LeftAndRightNeighbors(l, r) =>
-            E.mult(matGTGinvGT, E8)
-            val Y8 = X8.copy()
-            Y8.add(-1, E8)
-
-            // Unpack the coefficients and stuff them into the matrix L1.
-            val row1 = 2 * edgeIdx
-            L1.set(row1, 2 * i, Y8.get(0, 0))
-            L1.set(row1, 2 * i + 1, Y8.get(0, 1))
-            L1.set(row1, 2 * j, Y8.get(0, 2))
-            L1.set(row1, 2 * j + 1, Y8.get(0, 3))
-            L1.set(row1, 2 * l, Y8.get(0, 4))
-            L1.set(row1, 2 * l + 1, Y8.get(0, 5))
-            L1.set(row1, 2 * r, Y8.get(0, 6))
-            L1.set(row1, 2 * r + 1, Y8.get(0, 7))
-
-            val row2 = row1 + 1
-            L1.set(row2, 2 * i, Y8.get(1, 0))
-            L1.set(row2, 2 * i + 1, Y8.get(1, 1))
-            L1.set(row2, 2 * j, Y8.get(1, 2))
-            L1.set(row2, 2 * j + 1, Y8.get(1, 3))
-            L1.set(row2, 2 * l, Y8.get(1, 4))
-            L1.set(row2, 2 * l + 1, Y8.get(1, 5))
-            L1.set(row2, 2 * r, Y8.get(1, 6))
-            L1.set(row2, 2 * r + 1, Y8.get(1, 7))
-
-          case LeftNeighbor(l)  => caseOneNeighbor(l)
-          case RightNeighbor(r) => caseOneNeighbor(r)
+        
+        E.mult(matGTGinvGT, outE)
+        outX.add(-1, outE)
+        
+        // Unpack the coefficients and stuff them into the matrix L1
+        val row1 = 2 * edgeIdx
+        val row2 = row1 + 1
+        
+        (Iterable(i, j) ++ neighborInfo.indices).iterator.zipWithIndex.foreach{case (i, j) =>
+          L1.set(row1, 2 * i, outX.get(0, 2 * j))
+          L1.set(row1, 2 * i + 1, outX.get(0, 2*j + 1))
+          
+          L1.set(row2, 2 * i, outX.get(1, 2 * j))
+          L1.set(row2, 2 * i + 1, outX.get(1, 2 * j + 1))
         }
     }
     L1
@@ -236,7 +192,6 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
   }
 
   def compile(handleIDs: IndexedSeq[Int], registrationResult: RegistrationResult): CompilationResult = {
-
     val L1 = registrationResult.L1
     val L2 = registrationResult.L2
 
@@ -273,11 +228,9 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
   }
 
   def calculateNewVertexPositions(handleIndices: IndexedSeq[Int], handlePositions: IndexedSeq[Point], compilationResult: CompilationResult): IndexedSeq[Point] = {
-
     val b1 = new Array[Double](2 * compilationResult.edgeNeighborDoodads.size + 2 * handlePositions.size)
     handlePositions.indices.foreach { i =>
       val c = handlePositions(i)
-
       val idx = 2 * (compilationResult.edgeNeighborDoodads.size + i)
       b1(idx) = w * c.x
       b1(idx + 1) = w * c.y
@@ -293,31 +246,19 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
     compilationResult.edgeNeighborDoodads.iterator.zipWithIndex.foreach {
       case (EdgeNeighborDoodad(Edge(i, j), neighborInfo, matGTGinvGT), edgeIdx) =>
 
-        val vi = similarityTransformedVertices(i)
-        val vj = similarityTransformedVertices(j)
-
-        // TODO: Clean up redundancy here.
-        val (c, s) = neighborInfo match {
-          case LeftAndRightNeighbors(l, r) =>
-            val vl = similarityTransformedVertices(l)
-            val vr = similarityTransformedVertices(r)
-            val cs = matGTGinvGT.mult(new DenseVector(Array(vi.x, vi.y, vj.x, vj.y, vl.x, vl.y, vr.x, vr.y)), new DenseVector(2))
-            (cs.get(0), cs.get(1))
-          case LeftNeighbor(l) =>
-            val vl = similarityTransformedVertices(l)
-            val cs = matGTGinvGT.mult(new DenseVector(Array(vi.x, vi.y, vj.x, vj.y, vl.x, vl.y)), new DenseVector(2))
-            (cs.get(0), cs.get(1))
-          case RightNeighbor(r) =>
-            val vr = similarityTransformedVertices(r)
-            val cs = matGTGinvGT.mult(new DenseVector(Array(vi.x, vi.y, vj.x, vj.y, vr.x, vr.y)), new DenseVector(2))
-            (cs.get(0), cs.get(1))
+        val (c, s) = {
+          val xyCoords = (Iterable(i, j) ++ neighborInfo.indices)
+            .map(similarityTransformedVertices(_).toList)
+            .flatten
+            .toArray
+          
+          val cs = matGTGinvGT.mult(new DenseVector(xyCoords), new DenseVector(2))
+          (cs.get(0), cs.get(1))
         }
 
         val T = new DenseMatrix(2, 2)
-        T.set(0, 0, c)
-        T.set(0, 1, s)
-        T.set(1, 0, -s)
-        T.set(1, 1, c)
+        T.set(0, 0,  c);  T.set(0, 1, s)
+        T.set(1, 0, -s);  T.set(1, 1, c)
         T.scale(1d / math.sqrt(c * c + s * s))
 
         val e = vertices(j) - vertices(i)
