@@ -15,33 +15,39 @@ import no.uib.cipr.matrix.DenseVector
 // TODO: Use sparse matrices everywhere
 case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[(Int, Int, Int)]) {
 
-  case class Edge(i: Int, j: Int) {
-    require(i < j)
+  class Edge private (val i: Int, val j: Int)
+  object Edge {
+    def apply(i: Int, j: Int): Edge = new Edge(i min j, i max j)
+    def unapply(e: Edge): Option[(Int, Int)] = Some((e.i, e.j))
   }
 
   val w = 1000d
 
   private[this] case class Triangle(i: Int, j: Int, k: Int)
+  
+  sealed trait LeftRightNeighborInfo
+  case class LeftAndRightNeighbors(l: Int, r: Int) extends LeftRightNeighborInfo
+  case class LeftNeighbor(l: Int) extends LeftRightNeighborInfo
+  case class RightNeighbor(r: Int) extends LeftRightNeighborInfo
 
-  case class EdgeNeighborDoodad(
-    e: Edge,
-    neighborInfo: LeftRightNeighborInfo,
-    GTGinvGT: DenseMatrix)
-
+  case class EdgeNeighborDoodad(e: Edge, neighborInfo: LeftRightNeighborInfo, GTGinvGT: DenseMatrix)
+  
+  case class CompilationResult(A1: Dcs, A2: Dcs, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
   case class RegistrationResult(L1: DenseMatrix, L2: DenseMatrix, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
+
+  implicit class MultimapOps[K, V](self: Map[K, Seq[V]]) {
+    def multiUpdated(key: K, value: V): Map[K, Seq[V]] = self.updated(key, self.getOrElse(key, Seq.empty) :+ value)
+  }
 
   /*
    * Calculate the top of matrices A1 and A2.  Also calculate
-   * matrix G products for each edge.
+   * matrix G products (i.e., GTGinvGT) for each edge.
    */
   def register(): RegistrationResult = {
     val edgeToAdjacentTris = triangles.foldLeft(Map.empty[Edge, Seq[Triangle]]) {
       case (map, (p, q, r)) =>
-        Seq(p, q, r).combinations(2).foldLeft(map) {
-          case (map, Seq(i, j)) =>
-            val e = Edge(i min j, i max j)
-            map.updated(e, map.getOrElse(e, Seq.empty) :+ Triangle(p, q, r))
-        }
+        val t = Triangle(p, q, r)
+        Seq(Edge(p, q), Edge(p, r), Edge(q, r)).foldLeft(map)(_.multiUpdated(_, t))
     }
 
     val edgeNeighborDoodads = edgeToAdjacentTris.map {
@@ -94,13 +100,7 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
     RegistrationResult(L1, L2, edgeNeighborDoodads)
   }
 
-  sealed trait LeftRightNeighborInfo
-  case class LeftAndRightNeighbors(l: Int, r: Int) extends LeftRightNeighborInfo
-  case class LeftNeighbor(l: Int) extends LeftRightNeighborInfo
-  case class RightNeighbor(r: Int) extends LeftRightNeighborInfo
-
   private[this] def getLeftAndRightEdgeNeighbors(e: Edge, adjacentTris: Seq[Triangle]): LeftRightNeighborInfo = {
-
     val ij = adjacentTris
       .flatMap(_.toList)
       .filterNot(x => x == e.i || x == e.j)
@@ -234,8 +234,6 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
     }
     L2
   }
-
-  case class CompilationResult(A1: Dcs, A2: Dcs, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
 
   def compile(handleIDs: IndexedSeq[Int], registrationResult: RegistrationResult): CompilationResult = {
 
