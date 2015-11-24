@@ -22,8 +22,8 @@ object Demo extends SimpleSwingApplication {
   /*
    * All mutable state is accounted for right here. 
    */
-  val handles = new scala.collection.mutable.ArrayBuffer[Int]
-  var draggingHandle: Option[Int] = None
+  val handles = new scala.collection.mutable.ArrayBuffer[(Int, Point)]
+  var draggingHandle: Option[(Int, Point)] = None
   var compilationResult: Option[sampleShape.CompilationResult] = None
   var newVertexPositions: Option[IndexedSeq[Point]] = None
 
@@ -49,17 +49,16 @@ object Demo extends SimpleSwingApplication {
             g2d.drawLine(p2.x.toInt, p2.y.toInt, p3.x.toInt, p3.y.toInt)
         }
 
-        def drawHandle(handleIdx: Int): Unit = {
-          val p = sampleShape.vertices(handleIdx)
+        def drawHandle(handleIdx: Int, p: Point): Unit = {
           val diameter = 2 * handleRadius + 1
           g2d.fillOval(p.x.toInt - handleRadius, p.y.toInt - handleRadius, diameter, diameter)
         }
 
         g2d.setColor(Color.orange)
-        handles.foreach(drawHandle)
+        handles.foreach(Function.tupled(drawHandle))
 
         g2d.setColor(Color.red)
-        draggingHandle.foreach(drawHandle)
+        draggingHandle.foreach(Function.tupled(drawHandle))
 
         g2d.setColor(Color.green)
         newVertexPositions.foreach { vertices =>
@@ -85,41 +84,39 @@ object Demo extends SimpleSwingApplication {
               val q = sampleShape.vertices(i)
               p.distSq(q)
             }
-            if (!handles.contains[Int](closestVertexIdx))
-              handles += closestVertexIdx
-            else
-              handles -= closestVertexIdx
-
+            
+            // Update handle positions
+            handles.zipWithIndex.find{case ((hi, hp), i) =>
+              closestVertexIdx == hi
+            } match {
+              case Some(((hp, hi), i)) =>
+                handles.remove(i)
+              case None => handles += ((closestVertexIdx, sampleShape.vertices(closestVertexIdx)))
+            }
+            
             if (!handles.isEmpty)
-              compilationResult = Some(sampleShape.compile(handles, registrationResult))
-
+              compilationResult = Some(sampleShape.compile(handles.map(_._1), registrationResult))
+            
             repaint()
 
           } else if (SwingUtilities.isLeftMouseButton(e.peer)) {
             // Did we manage to grab a handle?
-            // draggingHandle
-            draggingHandle = handles.iterator.find(i =>
-              p.dist(sampleShape.vertices(i)) <= handleRadius + 1
-            )
+            draggingHandle = handles.iterator.find{case (i, p2) =>
+              p.dist(p2) <= handleRadius + 1
+            }
 
             repaint()
           }
         case e: MouseDragged =>
           if (SwingUtilities.isLeftMouseButton(e.peer)) {
-            draggingHandle.zip(compilationResult).foreach {
-              case (h, c) =>
-                val handlePositions = handles.map {
-                  case i if i == h => Point(e.point.x, e.point.y)
-                  case i           => sampleShape.vertices(i)
-                }
-                newVertexPositions = Some(sampleShape.calculateNewVertexPositions(
-                 handles, handlePositions, c))
+            
+            // Update position of dragged handle
+            draggingHandle.zip(compilationResult).foreach{
+              case (handle, c) =>
+                // Update handle positions
+                handles.update(handles.indexWhere(h => h._1 == handle._1), (handle._1, Point(e.point.x, e.point.y)))
+                newVertexPositions = Some(sampleShape.calculateNewVertexPositions(handles.map(_._1), handles.map(_._2), c))
             }
-            //            val handlePositions = handles.map{
-            //              case i if i
-            //            }
-            //            sampleShape.calculateNewVertexPositions(
-            //                handlePositions, compilationResult)
           }
           repaint()
         case e: MouseReleased =>

@@ -13,9 +13,7 @@ import edu.emory.mathcs.csparsej.tdouble.Dcs_qrsol
 import no.uib.cipr.matrix.DenseVector
 
 // TODO: Use sparse matrices everywhere
-case class TriangulatedShape(
-    vertices: IndexedSeq[Point],
-    triangles: IndexedSeq[(Int, Int, Int)]) {
+case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[(Int, Int, Int)]) {
 
   case class Edge(i: Int, j: Int) {
     require(i < j)
@@ -30,16 +28,13 @@ case class TriangulatedShape(
     neighborInfo: LeftRightNeighborInfo,
     GTGinvGT: DenseMatrix)
 
-  case class RegistrationResult(L1: DenseMatrix, L2: DenseMatrix,
-                                edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
+  case class RegistrationResult(L1: DenseMatrix, L2: DenseMatrix, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
+
   /*
    * Calculate the top of matrices A1 and A2.  Also calculate
    * matrix G products for each edge.
    */
   def register(): RegistrationResult = {
-    /*
-     * For each edge, we have a data structure
-     */
     val edgeToAdjacentTris = triangles.foldLeft(Map.empty[Edge, Seq[Triangle]]) {
       case (map, (p, q, r)) =>
         Seq(p, q, r).combinations(2).foldLeft(map) {
@@ -49,56 +44,48 @@ case class TriangulatedShape(
         }
     }
 
-    // For each of these edges, calculate G.
     val edgeNeighborDoodads = edgeToAdjacentTris.map {
       case (e, ts) =>
+        val edgeNeighborInfo = getLeftAndRightEdgeNeighbors(e, ts)
+
         val vi = vertices(e.i)
         val vj = vertices(e.j)
 
-        val edgeNeighborInfo = getLeftAndRightEdgeNeighbors(e, ts)
-
-        val gRows = edgeNeighborInfo match {
-          case _: LeftAndRightNeighbors => 8
-          case _                        => 6
-        }
-
-        val G = new DenseMatrix(gRows, 2)
-        G.set(0, 0, vi.x); G.set(0, 1, vi.y)
-        G.set(1, 0, vi.y); G.set(1, 1, -vi.x)
-        G.set(2, 0, vj.x); G.set(2, 1, vj.y)
-        G.set(3, 0, vj.y); G.set(3, 1, -vj.x)
-
-        edgeNeighborInfo match {
+        val pts = edgeNeighborInfo match {
           case LeftAndRightNeighbors(l, r) =>
-            val vl = vertices(l)
-            val vr = vertices(r)
-            G.set(4, 0, vl.x); G.set(4, 1, vl.y)
-            G.set(5, 0, vl.y); G.set(5, 1, -vl.x)
-            G.set(6, 0, vr.x); G.set(6, 1, vr.y)
-            G.set(7, 0, vr.y); G.set(7, 1, -vr.x)
+            Seq(vi, vj, vertices(l), vertices(r))
           case LeftNeighbor(l) =>
-            val vl = vertices(l)
-            G.set(4, 0, vl.x); G.set(4, 1, vl.y)
-            G.set(5, 0, vl.y); G.set(5, 1, -vl.x)
+            Seq(vi, vj, vertices(l))
           case RightNeighbor(r) =>
-            val vr = vertices(r)
-            G.set(4, 0, vr.x); G.set(4, 1, vr.y)
-            G.set(5, 0, vr.y); G.set(5, 1, -vr.x)
+            Seq(vi, vj, vertices(r))
         }
 
-        val GTG = new DenseMatrix(2, 2)
+        val G = new DenseMatrix(2 * pts.size, 4)
+        pts.zipWithIndex.foreach {
+          case (p, i) =>
+            val row = 2 * i
+            G.set(row, 0, p.x); G.set(row, 1, p.y); G.set(row, 2, 1);
+            G.set(row + 1, 0, p.y); G.set(row + 1, 1, -p.x); G.set(row + 1, 3, 1);
+        }
+
+        val GTG = new DenseMatrix(G.numColumns, G.numColumns)
         G.transAmult(G, GTG)
 
         val GTGinv = {
-          val I = Matrices.identity(2);
+          val I = Matrices.identity(G.numColumns);
           GTG.solve(I, I.copy());
         }
 
-        // (2 x 2) x (2 x gRows) = 2 x gRows
-        val GTGinvGT = new DenseMatrix(2, gRows)
+        val GTGinvGT = new DenseMatrix(G.numColumns, G.numRows)
         GTGinv.transBmult(G, GTGinvGT)
 
-        EdgeNeighborDoodad(e, edgeNeighborInfo, GTGinvGT)
+        val GTGinvGT_top = new DenseMatrix(2, G.numRows)
+        (0 until GTGinvGT.numColumns).foreach { c =>
+          GTGinvGT_top.set(0, c, GTGinvGT.get(0, c))
+          GTGinvGT_top.set(1, c, GTGinvGT.get(1, c))
+        }
+
+        EdgeNeighborDoodad(e, edgeNeighborInfo, GTGinvGT_top)
     }.toIndexedSeq
 
     val L1 = buildMatrixL1(edgeNeighborDoodads)
@@ -248,10 +235,8 @@ case class TriangulatedShape(
     L2
   }
 
-  // TODO:  Remove the naive matrices when things appear to work perfectly.
   case class CompilationResult(A1: Dcs, A2: Dcs, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
 
-  // TODO:  This should return something.
   def compile(handleIDs: IndexedSeq[Int], registrationResult: RegistrationResult): CompilationResult = {
 
     val L1 = registrationResult.L1
@@ -335,25 +320,25 @@ case class TriangulatedShape(
         T.set(0, 1, s)
         T.set(1, 0, -s)
         T.set(1, 1, c)
-        T.scale(1 / (c * c + s * s))
+        T.scale(1d / math.sqrt(c * c + s * s))
 
-        val e = vj - vi
+        val e = vertices(j) - vertices(i)
 
         val m = T.mult(new DenseVector(Array(e.x, e.y)), new DenseVector(2))
         b2x(edgeIdx) = m.get(0)
         b2y(edgeIdx) = m.get(1)
     }
-    
-    handlePositions.indices.foreach{i =>
+
+    handlePositions.indices.foreach { i =>
       val c = handlePositions(i)
       val b2Idx = compilationResult.edgeNeighborDoodads.size + i
       b2x(b2Idx) = w * c.x
       b2y(b2Idx) = w * c.y
     }
-    
+
     Dcs_qrsol.cs_qrsol(0, compilationResult.A2, b2x)
     Dcs_qrsol.cs_qrsol(0, compilationResult.A2, b2y)
-    
+
     vertices.indices.map(i => Point(b2x(i), b2y(i)))
   }
 
@@ -371,6 +356,9 @@ case class TriangulatedShape(
     C1
   }
 
+  /*
+   * This is the bottom portion of the matrix A2 that optimizes scale.
+   */
   private[this] def buildMatrixC2(handleIDs: IndexedSeq[Int], w: Double): DenseMatrix = {
     val C2 = new DenseMatrix(handleIDs.size, vertices.size)
 
