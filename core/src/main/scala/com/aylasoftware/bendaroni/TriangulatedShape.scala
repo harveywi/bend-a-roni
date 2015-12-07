@@ -5,14 +5,17 @@ import shapeless.syntax.std.tuple._
 import no.uib.cipr.matrix.DenseMatrix
 import no.uib.cipr.matrix.Matrices
 import scala.collection.JavaConverters._
-
 import no.uib.cipr.matrix.DenseVector
-
 import org.aylasoftware.csparse.doubles.Dcs_compress
 import org.aylasoftware.csparse.doubles.Dcs_common.Dcs
 import org.aylasoftware.csparse.doubles.Dcs_util
 import org.aylasoftware.csparse.doubles.Dcs_entry
 import org.aylasoftware.csparse.doubles.Dcs_qrsol
+import org.aylasoftware.csparse.doubles.Dcs_transpose
+import org.aylasoftware.csparse.doubles.Dcs_multiply
+import org.aylasoftware.csparse.doubles.Dcs_add
+import org.aylasoftware.csparse.doubles.Dcs_gaxpy
+import no.uib.cipr.matrix.Matrix
 
 // TODO: Use sparse matrices everywhere
 case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[Triangle]) {
@@ -26,7 +29,7 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
   case class LeftNeighbor(l: Int) extends NeighborInfo(l)
   case class RightNeighbor(r: Int) extends NeighborInfo(r)
 
-  case class EdgeNeighborDoodad(e: Edge, neighborInfo: NeighborInfo, GTGinvGT: DenseMatrix)
+  case class EdgeNeighborDoodad(e: Edge, neighborInfo: NeighborInfo, GTGinvGT: Dcs)
 
   case class CompilationResult(A1: Dcs, A2: Dcs, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
   case class RegistrationResult(L1: DenseMatrix, L2: DenseMatrix, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
@@ -54,28 +57,43 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
 
         val pts = Seq(vi, vj) ++ neighborInfo.points
 
-        val G = new DenseMatrix(2 * pts.size, 4)
-        pts.iterator.zipWithIndex.foreach {
-          case (p, i) =>
-            val row = 2 * i
-            G.set(row, 0, p.x); G.set(row, 1, p.y); G.set(row, 2, 1);
-            G.set(row + 1, 0, p.y); G.set(row + 1, 1, -p.x); G.set(row + 1, 3, 1);
-        }
+        val G = createMatrix(2 * pts.size, 4)(
+          pts.iterator.zipWithIndex.flatMap {
+            case (p, i) =>
+              val row = 2 * i
+              Seq(
+                MatrixEntry(row, 0, p.x), MatrixEntry(row, 1, p.y), MatrixEntry(row, 2, 1),
+                MatrixEntry(row + 1, 0, p.y), MatrixEntry(row + 1, 1, -p.x), MatrixEntry(row + 1, 3, 1)
+              )
+          }
+        )
 
-        val GTG = G.transAmult(G, new DenseMatrix(G.numColumns, G.numColumns))
+        val GT = Dcs_transpose.cs_transpose(G, true)
+
+        val GTG = Dcs_multiply.cs_multiply(GT, G)
 
         val GTGinv = {
-          val I = Matrices.identity(G.numColumns);
-          GTG.solve(I, I.copy());
+          // We have to do each column independently.  Ugh.
+          createMatrix(GTG.n, GTG.n)((0 until GTG.m).iterator.flatMap { row =>
+            val y = new Array[Double](G.n)
+            y(row) = 1
+
+            Dcs_qrsol.cs_qrsol(0, GTG, y)
+
+            y.indices.map(col => MatrixEntry(row, col, y(col)))
+          })
         }
 
-        val GTGinvGT = GTGinv.transBmult(G, new DenseMatrix(G.numColumns, G.numRows))
+        val GTGinvGT = Dcs_multiply.cs_multiply(GTGinv, GT)
 
-        val GTGinvGT_top = new DenseMatrix(2, G.numRows)
-        (0 until GTGinvGT.numColumns).foreach { c =>
-          GTGinvGT_top.set(0, c, GTGinvGT.get(0, c))
-          GTGinvGT_top.set(1, c, GTGinvGT.get(1, c))
-        }
+        val GTGinvGT_top = createMatrix(2, G.m)(
+          (0 until GTGinvGT.n).iterator.flatMap { c =>
+            Seq(
+              MatrixEntry(0, c, GTGinvGT.get(0, c)),
+              MatrixEntry(1, c, GTGinvGT.get(1, c))
+            )
+          }
+        )
 
         EdgeNeighborDoodad(e, neighborInfo, GTGinvGT_top)
     }.toIndexedSeq
@@ -126,45 +144,47 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
   private[this] def buildMatrixL1(edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad]): DenseMatrix = {
     val L1 = new DenseMatrix(2 * edgeNeighborDoodads.size, 2 * vertices.size)
 
-    // TODO:  Rename these matrices.
-    val X8 = new DenseMatrix(2, 8)
-    X8.set(0, 0, -1); X8.set(0, 2, 1)
-    X8.set(1, 1, -1); X8.set(1, 3, 1)
+    val X8 = createMatrix(2, 8)(Iterator(
+      MatrixEntry(0, 0, -1), MatrixEntry(0, 2, 1),
+      MatrixEntry(1, 1, -1), MatrixEntry(1, 3, 1)
+    ))
 
-    val X6 = new DenseMatrix(2, 6)
-    X6.set(0, 0, -1); X6.set(0, 2, 1)
-    X6.set(1, 1, -1); X6.set(1, 3, 1)
+    val X6 = createMatrix(2, 6)(Iterator(
+      MatrixEntry(0, 0, -1), MatrixEntry(0, 2, 1),
+      MatrixEntry(1, 1, -1), MatrixEntry(1, 3, 1)
+    ))
 
-    val E = new DenseMatrix(2, 2)
-    val E8 = new DenseMatrix(2, 8)
-    val E6 = new DenseMatrix(2, 6)
     edgeNeighborDoodads.iterator.zipWithIndex.foreach {
       case (EdgeNeighborDoodad(Edge(i, j), neighborInfo, matGTGinvGT), edgeIdx) =>
         val vi = vertices(i)
         val vj = vertices(j)
         val eVec = vj - vi
 
-        E.set(0, 0, eVec.x); E.set(0, 1, eVec.y)
-        E.set(1, 0, eVec.y); E.set(1, 1, -eVec.x)
+        val E = createMatrix(2, 2)(Iterator(
+          MatrixEntry(0, 0, eVec.x), MatrixEntry(0, 1, eVec.y),
+          MatrixEntry(1, 0, eVec.y), MatrixEntry(1, 1, -eVec.x)
+        ))
 
-        val (outE, outX) = neighborInfo match {
-          case _: LeftAndRightNeighbors => (E8, X8.copy)
-          case _ => (E6, X6.copy)
+        val (outXtemp) = neighborInfo match {
+          case _: LeftAndRightNeighbors => X8.copy
+          case _                        => X6.copy
         }
-        
-        E.mult(matGTGinvGT, outE)
-        outX.add(-1, outE)
-        
+
+        val outE = Dcs_multiply.cs_multiply(E, matGTGinvGT)
+
+        val outX = Dcs_add.cs_add(outXtemp, outE, 1, -1)
+
         // Unpack the coefficients and stuff them into the matrix L1
         val row1 = 2 * edgeIdx
         val row2 = row1 + 1
-        
-        (Iterable(i, j) ++ neighborInfo.indices).iterator.zipWithIndex.foreach{case (i, j) =>
-          L1.set(row1, 2 * i, outX.get(0, 2 * j))
-          L1.set(row1, 2 * i + 1, outX.get(0, 2*j + 1))
-          
-          L1.set(row2, 2 * i, outX.get(1, 2 * j))
-          L1.set(row2, 2 * i + 1, outX.get(1, 2 * j + 1))
+
+        (Iterable(i, j) ++ neighborInfo.indices).iterator.zipWithIndex.foreach {
+          case (i, j) =>
+            L1.set(row1, 2 * i, outX.get(0, 2 * j))
+            L1.set(row1, 2 * i + 1, outX.get(0, 2 * j + 1))
+
+            L1.set(row2, 2 * i, outX.get(1, 2 * j))
+            L1.set(row2, 2 * i + 1, outX.get(1, 2 * j + 1))
         }
     }
     L1
@@ -244,14 +264,16 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
             .map(similarityTransformedVertices(_).toList)
             .flatten
             .toArray
-          
-          val cs = matGTGinvGT.mult(new DenseVector(xyCoords), new DenseVector(2))
-          (cs.get(0), cs.get(1))
+
+          //          val cs = matGTGinvGT.mult(new DenseVector(xyCoords), new DenseVector(2))
+          val cs = new Array[Double](2)
+          Dcs_gaxpy.cs_gaxpy(matGTGinvGT, xyCoords, cs)
+          (cs(0), cs(1))
         }
 
         val T = new DenseMatrix(2, 2)
-        T.set(0, 0,  c);  T.set(0, 1, s)
-        T.set(1, 0, -s);  T.set(1, 1, c)
+        T.set(0, 0, c); T.set(0, 1, s)
+        T.set(1, 0, -s); T.set(1, 1, c)
         T.scale(1d / math.sqrt(c * c + s * s))
 
         val e = vertices(j) - vertices(i)
@@ -299,5 +321,13 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
         C2.set(row, handleId, w)
     }
     C2
+  }
+
+  private[this] case class MatrixEntry(row: Int, column: Int, value: Double)
+  private[this] def createMatrix(m: Int, n: Int)(data: Iterator[MatrixEntry]): Dcs = {
+    val A = Dcs_util.cs_spalloc(m, n, 1, true, true)
+    data.filter(_.value != 0).foreach(e => assert(Dcs_entry.cs_entry(A, e.row, e.column, e.value) != null))
+
+    Dcs_compress.cs_compress(A)
   }
 }
