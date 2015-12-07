@@ -1,36 +1,45 @@
 import sbt._
 import Keys._
+import org.scalajs.sbtplugin.ScalaJSPlugin
+import org.scalajs.sbtplugin.ScalaJSPlugin.autoImport._
 
 object BendARoniBuild extends Build {
 
   lazy val bendARoni = (project in file(".")
-    aggregate(core, examples)
-    dependsOn(core, examples)
+    aggregate(coreJVM, coreJS, examples)
+    dependsOn(coreJVM, coreJS, examples)
     settings(commonSettings: _*)
     settings(
-      moduleName := "bend-a-roni-root"
+      moduleName := "bend-a-roni-root",
+      publish := {},
+      publishLocal := {}
     )
   )
 
-  lazy val core = (project
+  lazy val core = (crossProject.crossType(CrossType.Pure).in(file("core"))
     settings(commonSettings: _*)
     settings(
       moduleName := "bend-a-roni",
       libraryDependencies ++= Seq(
-				"org.aylasoftware" % "csparse_2.11" % "0.1-SNAPSHOT"
+        "org.aylasoftware" %%% "csparse" % "0.1-SNAPSHOT"
       )
     )
   )
+  
+  lazy val coreJVM = core.jvm
+  lazy val coreJS = core.js
 
 
   lazy val examples = (project
-    dependsOn core
+    dependsOn coreJVM
     settings(commonSettings: _*)
     settings(
       moduleName := "bend-a-roni-examples",
       libraryDependencies ++= Seq(
         "org.scala-lang.modules" % "scala-swing_2.11" % "2.0.0-M2" withSources()
-      )
+      ),
+      publish := {},
+      publishLocal := {}
     )
   )
 
