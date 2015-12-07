@@ -6,7 +6,6 @@ import java.awt.Graphics2D
 import scala.swing.MainFrame
 import scala.swing.Panel
 import scala.swing.SimpleSwingApplication
-import com.github.fommil.netlib.BLAS
 import scala.swing.event._
 import javax.swing.SwingUtilities
 import com.aylasoftware.bendaroni._

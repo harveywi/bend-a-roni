@@ -2,10 +2,7 @@ package com.aylasoftware.bendaroni
 
 import shapeless._
 import shapeless.syntax.std.tuple._
-import no.uib.cipr.matrix.DenseMatrix
-import no.uib.cipr.matrix.Matrices
 import scala.collection.JavaConverters._
-import no.uib.cipr.matrix.DenseVector
 import org.aylasoftware.csparse.doubles.Dcs_compress
 import org.aylasoftware.csparse.doubles.Dcs_common.Dcs
 import org.aylasoftware.csparse.doubles.Dcs_util
@@ -15,9 +12,7 @@ import org.aylasoftware.csparse.doubles.Dcs_transpose
 import org.aylasoftware.csparse.doubles.Dcs_multiply
 import org.aylasoftware.csparse.doubles.Dcs_add
 import org.aylasoftware.csparse.doubles.Dcs_gaxpy
-import no.uib.cipr.matrix.Matrix
 
-// TODO: Use sparse matrices everywhere
 case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[Triangle]) {
 
   val w = 1000d
@@ -32,7 +27,7 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
   case class EdgeNeighborDoodad(e: Edge, neighborInfo: NeighborInfo, GTGinvGT: Dcs)
 
   case class CompilationResult(A1: Dcs, A2: Dcs, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
-  case class RegistrationResult(L1: DenseMatrix, L2: DenseMatrix, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
+  case class RegistrationResult(L1: Dcs, L2: Dcs, edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad])
 
   implicit class MultimapOps[K, V](self: Map[K, Seq[V]]) {
     def multiUpdated(key: K, value: V): Map[K, Seq[V]] = self.updated(key, self.getOrElse(key, Seq.empty) :+ value)
@@ -141,8 +136,8 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
    * L1 is the top part of matrix A1 that is used in the translation/rotation
    * calculations.
    */
-  private[this] def buildMatrixL1(edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad]): DenseMatrix = {
-    val L1 = new DenseMatrix(2 * edgeNeighborDoodads.size, 2 * vertices.size)
+  private[this] def buildMatrixL1(edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad]): Dcs = {
+    val L1 = Dcs_util.cs_spalloc(2 * edgeNeighborDoodads.size, 2 * vertices.size, 1, true, true)
 
     val X8 = createMatrix(2, 8)(Iterator(
       MatrixEntry(0, 0, -1), MatrixEntry(0, 2, 1),
@@ -180,28 +175,28 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
 
         (Iterable(i, j) ++ neighborInfo.indices).iterator.zipWithIndex.foreach {
           case (i, j) =>
-            L1.set(row1, 2 * i, outX.get(0, 2 * j))
-            L1.set(row1, 2 * i + 1, outX.get(0, 2 * j + 1))
+            assert(Dcs_entry.cs_entry(L1, row1, 2 * i, outX.get(0, 2 * j)) != null)
+            assert(Dcs_entry.cs_entry(L1, row1, 2 * i + 1, outX.get(0, 2 * j + 1)) != null)
 
-            L1.set(row2, 2 * i, outX.get(1, 2 * j))
-            L1.set(row2, 2 * i + 1, outX.get(1, 2 * j + 1))
+            assert(Dcs_entry.cs_entry(L1, row2, 2 * i, outX.get(1, 2 * j)) != null)
+            assert(Dcs_entry.cs_entry(L1, row2, 2 * i + 1, outX.get(1, 2 * j + 1)) != null)
         }
     }
-    L1
+    Dcs_compress.cs_compress(L1)
   }
 
   /*
    * L2 is the top portion of the matrix used for optimizing scale. 
    */
-  private[this] def buildMatrixL2(edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad]): DenseMatrix = {
-    val L2 = new DenseMatrix(edgeNeighborDoodads.size, vertices.size)
+  private[this] def buildMatrixL2(edgeNeighborDoodads: IndexedSeq[EdgeNeighborDoodad]): Dcs = {
+    val L2 = Dcs_util.cs_spalloc(edgeNeighborDoodads.size, vertices.size, 1, true, true)
 
     edgeNeighborDoodads.iterator.zipWithIndex.foreach {
       case (EdgeNeighborDoodad(Edge(i, j), _, _), edgeIdx) =>
-        L2.set(edgeIdx, i, -1)
-        L2.set(edgeIdx, j, 1)
+        assert(Dcs_entry.cs_entry(L2, edgeIdx, i, -1) != null)
+        assert(Dcs_entry.cs_entry(L2, edgeIdx, j, 1) != null)
     }
-    L2
+    Dcs_compress.cs_compress(L2)
   }
 
   def compile(handleIDs: IndexedSeq[Int], registrationResult: RegistrationResult): CompilationResult = {
@@ -213,27 +208,17 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
 
     // Copy L1 and C1 into A1.
     val A1 = Dcs_util.cs_spalloc(0, 0, 1, true, true)
-    L1.iterator.asScala
-      // TODO:  When L1 is sparse, get rid of these checks
-      .filter(_.get != 0d)
-      .foreach(e => assert(Dcs_entry.cs_entry(A1, e.row, e.column, e.get) != null))
+    L1.entries.foreach(e => assert(Dcs_entry.cs_entry(A1, e.row, e.column, e.value) != null))
 
-    C1.iterator.asScala
-      .filter(_.get != 0d)
-      .foreach(e => assert(Dcs_entry.cs_entry(A1, e.row + L1.numRows, e.column, e.get) != null))
+    C1.entries.foreach(e => assert(Dcs_entry.cs_entry(A1, e.row + L1.m, e.column, e.value) != null))
 
     val A1_compressed = Dcs_compress.cs_compress(A1)
 
     // Copy L2 and C2 into A2.
     val A2 = Dcs_util.cs_spalloc(0, 0, 1, true, true)
-    L2.iterator.asScala
-      // TODO:  When L2 is sparse, get rid of these checks
-      .filter(_.get != 0d)
-      .foreach(e => assert(Dcs_entry.cs_entry(A2, e.row, e.column, e.get) != null))
+    L2.entries.foreach(e => assert(Dcs_entry.cs_entry(A2, e.row, e.column, e.value) != null))
 
-    C2.iterator.asScala
-      .filter(_.get != 0d)
-      .foreach(e => assert(Dcs_entry.cs_entry(A2, e.row + L2.numRows, e.column, e.get) != null))
+    C2.entries.foreach(e => assert(Dcs_entry.cs_entry(A2, e.row + L2.m, e.column, e.value) != null))
 
     val A2_compressed = Dcs_compress.cs_compress(A2)
 
@@ -265,22 +250,25 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
             .flatten
             .toArray
 
-          //          val cs = matGTGinvGT.mult(new DenseVector(xyCoords), new DenseVector(2))
           val cs = new Array[Double](2)
           Dcs_gaxpy.cs_gaxpy(matGTGinvGT, xyCoords, cs)
           (cs(0), cs(1))
         }
 
-        val T = new DenseMatrix(2, 2)
-        T.set(0, 0, c); T.set(0, 1, s)
-        T.set(1, 0, -s); T.set(1, 1, c)
-        T.scale(1d / math.sqrt(c * c + s * s))
+        val scaleNorm = math.sqrt(c * c + s * s)
+        val cs = c / scaleNorm
+        val ss = s / scaleNorm
+        val T = createMatrix(2, 2)(Iterator(
+          MatrixEntry(0, 0, cs), MatrixEntry(0, 1, ss),
+          MatrixEntry(1, 0, -ss), MatrixEntry(1, 1, cs)
+        ))
 
         val e = vertices(j) - vertices(i)
 
-        val m = T.mult(new DenseVector(Array(e.x, e.y)), new DenseVector(2))
-        b2x(edgeIdx) = m.get(0)
-        b2y(edgeIdx) = m.get(1)
+        val m = new Array[Double](2)
+        Dcs_gaxpy.cs_gaxpy(T, Array(e.x, e.y), m)
+        b2x(edgeIdx) = m(0)
+        b2y(edgeIdx) = m(1)
     }
 
     handlePositions.indices.foreach { i =>
@@ -299,29 +287,27 @@ case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[
   /*
    * This is the bottom portion of the matrix A1 that optimizes translation/rotation.
    */
-  private[this] def buildMatrixC1(handleIDs: IndexedSeq[Int], w: Double): DenseMatrix = {
-    val C1 = new DenseMatrix(2 * handleIDs.size, 2 * vertices.size)
-
-    handleIDs.iterator.zipWithIndex.foreach {
-      case (handleId, rowIdx) =>
-        C1.set(2 * rowIdx, 2 * handleId, w)
-        C1.set(2 * rowIdx + 1, 2 * handleId + 1, w)
-    }
-    C1
-  }
+  private[this] def buildMatrixC1(handleIDs: IndexedSeq[Int], w: Double): Dcs =
+    createMatrix(2 * handleIDs.size, 2 * vertices.size)(
+      handleIDs.iterator.zipWithIndex.flatMap {
+        case (handleId, rowIdx) =>
+          Iterator(
+            MatrixEntry(2 * rowIdx, 2 * handleId, w),
+            MatrixEntry(2 * rowIdx + 1, 2 * handleId + 1, w)
+          )
+      }
+    )
 
   /*
    * This is the bottom portion of the matrix A2 that optimizes scale.
    */
-  private[this] def buildMatrixC2(handleIDs: IndexedSeq[Int], w: Double): DenseMatrix = {
-    val C2 = new DenseMatrix(handleIDs.size, vertices.size)
-
-    handleIDs.iterator.zipWithIndex.foreach {
-      case (handleId, row) =>
-        C2.set(row, handleId, w)
-    }
-    C2
-  }
+  private[this] def buildMatrixC2(handleIDs: IndexedSeq[Int], w: Double): Dcs =
+    createMatrix(handleIDs.size, vertices.size)(
+      handleIDs.iterator.zipWithIndex.map {
+        case (handleId, row) =>
+          MatrixEntry(row, handleId, w)
+      }
+    )
 
   private[this] case class MatrixEntry(row: Int, column: Int, value: Double)
   private[this] def createMatrix(m: Int, n: Int)(data: Iterator[MatrixEntry]): Dcs = {
