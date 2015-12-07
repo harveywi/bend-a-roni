@@ -5,12 +5,14 @@ import shapeless.syntax.std.tuple._
 import no.uib.cipr.matrix.DenseMatrix
 import no.uib.cipr.matrix.Matrices
 import scala.collection.JavaConverters._
-import edu.emory.mathcs.csparsej.tdouble.Dcs_common.Dcs
-import edu.emory.mathcs.csparsej.tdouble.Dcs_util
-import edu.emory.mathcs.csparsej.tdouble.Dcs_entry
-import edu.emory.mathcs.csparsej.tdouble.Dcs_compress
-import edu.emory.mathcs.csparsej.tdouble.Dcs_qrsol
+
 import no.uib.cipr.matrix.DenseVector
+
+import org.aylasoftware.csparse.doubles.Dcs_compress
+import org.aylasoftware.csparse.doubles.Dcs_common.Dcs
+import org.aylasoftware.csparse.doubles.Dcs_util
+import org.aylasoftware.csparse.doubles.Dcs_entry
+import org.aylasoftware.csparse.doubles.Dcs_qrsol
 
 // TODO: Use sparse matrices everywhere
 case class TriangulatedShape(vertices: IndexedSeq[Point], triangles: IndexedSeq[Triangle]) {

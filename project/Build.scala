@@ -18,7 +18,7 @@ object BendARoniBuild extends Build {
       moduleName := "bend-a-roni",
       libraryDependencies ++= Seq(
         "com.googlecode.matrix-toolkits-java" % "mtj" % "1.0.2" withSources(),
-        "net.sourceforge.csparsej" % "csparsej" % "1.1.1" withSources()
+				"org.aylasoftware" % "csparse_2.11" % "0.1-SNAPSHOT"
       )
     )
   )
